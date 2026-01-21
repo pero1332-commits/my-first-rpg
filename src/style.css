@@ -1,0 +1,33 @@
+html, body {
+  height: 100%;
+  margin: 0;
+  background: #0b1020;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#wrap {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+canvas {
+  width: min(92vw, 820px);
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 14px;
+  background: #0b1020;
+  image-rendering: pixelated;
+  touch-action: none;
+}
+
+#hint {
+  color: rgba(255,255,255,0.85);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
