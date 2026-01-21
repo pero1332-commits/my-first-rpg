@@ -2,31 +2,22 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, user-scalable=no"
-    />
-    <title>My First RPG</title>
-
-    <!-- CSS -->
-    <link rel="stylesheet" href="/style.css" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <title>JKスーパーRPG</title>
+    <link rel="stylesheet" href="/src/style.css" />
   </head>
-
   <body>
     <div id="wrap">
-      <!-- ゲーム画面 -->
       <canvas id="game"></canvas>
 
-      <!-- ヒント表示 -->
       <div id="hint">
-        <div>📱 スマホ：画面下の十字キーで移動</div>
-        <div>⌨️ PC：WASD / 矢印キー</div>
-        <div>🎁 宝箱に触れると GET!</div>
+        <div>📱 スマホ：画面下の十字キーで移動 / SCANで攻撃</div>
+        <div>⌨️ PC：WASD / 矢印キーで移動　SPACE/ENTERでSCAN</div>
+        <div>👴 ウザ客ハゲおじ：当たるとメンタル減少（3）</div>
+        <div>🛒 倒すとカゴを落とす＋メンタル回復</div>
       </div>
     </div>
 
-    <!-- ゲーム本体 -->
     <script type="module" src="/src/main.js"></script>
-
   </body>
 </html>
