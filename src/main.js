@@ -1,3 +1,20 @@
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.min(window.innerWidth, 480);
+  const h = Math.min(window.innerHeight - 140, 270);
+
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+}
+
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
 
