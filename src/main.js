@@ -1,11 +1,13 @@
 // =========================
-// JKスーパーRPG（完全版）
-// - 9:16 縦全画面フィット
-// - タッチ十字キー + キーボード
+// バイト戦士の戦い（完全版・斜め移動入り）
+// - 9:16 縦全画面フィット（比率維持）
+// - タッチ十字キー（複数指同時押し対応）→ 斜め移動
+// - キーボード（WASD/矢印）→ 斜め移動
 // - 前方スキャン“ビーム” + 効果音（ビープ）
 // - 敵：ウザ客ハゲおじ（追尾/ランダム湧き）
 // - メンタル(ライフ)3、接触で減る、倒すと回復
 // - 倒すと買い物カゴを落とす → 回収でスコア
+// - ゲームオーバー画面（SCANでリスタート）
 // =========================
 
 const canvas = document.querySelector("#game");
@@ -56,12 +58,6 @@ function fitCanvas() {
 
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale, offsetX * dpr, offsetY * dpr);
   ctx.imageSmoothingEnabled = false;
-
-  // タッチUI用
-  canvas._viewW = viewW;
-  canvas._viewH = viewH;
-  canvas._offsetX = offsetX;
-  canvas._offsetY = offsetY;
 }
 window.addEventListener("resize", fitCanvas);
 fitCanvas();
@@ -71,10 +67,6 @@ fitCanvas();
 // =========================
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 function rand(a, b) { return a + Math.random() * (b - a); }
-function dist(ax, ay, bx, by) {
-  const dx = ax - bx, dy = ay - by;
-  return Math.hypot(dx, dy);
-}
 function aabb(a, b) {
   return (
     a.x < b.x + b.w &&
@@ -126,7 +118,7 @@ window.addEventListener("keyup", (e) => {
 // タッチ十字キーUI（画面下）
 // =========================
 const pad = {
-  size: 64,   // ボタン1個の見た目サイズ（内部座標）
+  size: 64,
   gap: 10,
   baseY: BASE_H - 90,
   leftX: 20,
@@ -137,10 +129,10 @@ function getPadRects() {
   const g = pad.gap;
   const y = pad.baseY;
 
-  const left  = { x: pad.leftX,        y: y,      w: s, h: s, label:"◀" };
-  const right = { x: pad.leftX + s+g + s+g, y: y, w: s, h: s, label:"▶" };
-  const up    = { x: pad.leftX + s+g,  y: y - (s+g), w: s, h: s, label:"▲" };
-  const down  = { x: pad.leftX + s+g,  y: y,      w: s, h: s, label:"▼" };
+  const left  = { x: pad.leftX,              y: y,        w: s, h: s, label:"◀" };
+  const right = { x: pad.leftX + (s+g)*2,    y: y,        w: s, h: s, label:"▶" };
+  const up    = { x: pad.leftX + (s+g),      y: y-(s+g),  w: s, h: s, label:"▲" };
+  const down  = { x: pad.leftX + (s+g),      y: y,        w: s, h: s, label:"▼" };
 
   const atkW = 120, atkH = 64;
   const atk = { x: BASE_W - atkW - 20, y: y - 10, w: atkW, h: atkH, label:"SCAN" };
@@ -148,18 +140,13 @@ function getPadRects() {
   return { left, right, up, down, atk };
 }
 
-const touchState = {
-  up:false, down:false, left:false, right:false,
-  atk:false,
-};
+const touchState = { up:false, down:false, left:false, right:false, atk:false };
 
 function viewToWorldXY(clientX, clientY) {
-  // 画面ピクセル → 内部ワールド座標（BASE）
   const rect = canvas.getBoundingClientRect();
   const x = (clientX - rect.left);
   const y = (clientY - rect.top);
 
-  // 表示は100vw/100vh、内部は「中央にBASE*scale」なので、余白ぶん引く
   const viewW = rect.width;
   const viewH = rect.height;
 
@@ -168,9 +155,7 @@ function viewToWorldXY(clientX, clientY) {
   const offsetX = (viewW - drawW) / 2;
   const offsetY = (viewH - drawH) / 2;
 
-  const wx = (x - offsetX) / scale;
-  const wy = (y - offsetY) / scale;
-  return { x: wx, y: wy };
+  return { x: (x - offsetX) / scale, y: (y - offsetY) / scale };
 }
 
 function hitRect(p, r) {
@@ -182,57 +167,74 @@ function resetTouchState() {
   touchState.atk = false;
 }
 
-canvas.addEventListener("pointerdown", (e) => {
-  canvas.setPointerCapture(e.pointerId);
-  const p = viewToWorldXY(e.clientX, e.clientY);
+// ★斜め移動の鍵：複数指同時押しを読む（touchイベント）
+function handleMultiTouch(e) {
+  // 移動方向を指から再構築
+  touchState.up = touchState.down = touchState.left = touchState.right = false;
+
   const r = getPadRects();
 
-  if (hitRect(p, r.up)) touchState.up = true;
-  if (hitRect(p, r.down)) touchState.down = true;
-  if (hitRect(p, r.left)) touchState.left = true;
-  if (hitRect(p, r.right)) touchState.right = true;
-
-  if (hitRect(p, r.atk)) {
-    touchState.atk = true;
-    requestScan();
+  for (const t of e.touches) {
+    const p = viewToWorldXY(t.clientX, t.clientY);
+    if (hitRect(p, r.up)) touchState.up = true;
+    if (hitRect(p, r.down)) touchState.down = true;
+    if (hitRect(p, r.left)) touchState.left = true;
+    if (hitRect(p, r.right)) touchState.right = true;
   }
-});
 
-canvas.addEventListener("pointermove", (e) => {
-  const p = viewToWorldXY(e.clientX, e.clientY);
+  e.preventDefault();
+}
+
+canvas.addEventListener("touchstart", (e) => {
   const r = getPadRects();
 
-  // 指が動いたら押下判定を更新（簡易）
-  touchState.up = hitRect(p, r.up);
-  touchState.down = hitRect(p, r.down);
-  touchState.left = hitRect(p, r.left);
-  touchState.right = hitRect(p, r.right);
-});
+  // SCANは「押した瞬間」だけ反応
+  for (const t of e.touches) {
+    const p = viewToWorldXY(t.clientX, t.clientY);
+    if (hitRect(p, r.atk)) {
+      touchState.atk = true;
+      requestScan();
+      break;
+    }
+  }
 
-canvas.addEventListener("pointerup", () => {
-  resetTouchState();
-});
+  handleMultiTouch(e);
+}, { passive: false });
+
+canvas.addEventListener("touchmove", handleMultiTouch, { passive: false });
+
+canvas.addEventListener("touchend", (e) => {
+  touchState.atk = false;
+  handleMultiTouch(e);
+}, { passive: false });
+
+canvas.addEventListener("touchcancel", (e) => {
+  touchState.atk = false;
+  handleMultiTouch(e);
+}, { passive: false });
+
+// pointerupでも念のためOFF
+canvas.addEventListener("pointerup", () => resetTouchState());
 
 // =========================
 // ゲーム状態
 // =========================
+const GAME = { over: false };
+
 const player = {
   x: 40, y: 80,
-  w: 40, h: 52,
-  speed: 170, // px/sec（内部座標）
-  dir: "down", // up/down/left/right
+  w: 54, h: 70,
+  speed: 185,
+  dir: "down",
   mental: 3,
-  invuln: 0, // 無敵時間
+  invuln: 0,
 };
 
 let score = 0;
-
 const enemies = [];
 const drops = [];
 
 let spawnTimer = 0;
-
-// スキャン（ビーム）状態
 let scanCooldown = 0;
 let scanFx = 0;
 
@@ -240,15 +242,17 @@ let scanFx = 0;
 // スキャン処理（前方ビーム）
 // =========================
 function requestScan() {
+  if (GAME.over) return;
   if (scanCooldown > 0) return;
+
   scanCooldown = 0.35;
-  scanFx = 0.12; // 描画用
+  scanFx = 0.12;
+
   beep(880, 70, "square", 0.035);
   beep(1320, 40, "square", 0.02);
 
-  // 向きに応じた判定矩形
-  const range = 120;
-  const thick = 48;
+  const range = 130;
+  const thick = 56;
 
   let bx, by, bw, bh;
   if (player.dir === "up") {
@@ -271,21 +275,17 @@ function requestScan() {
 
   const beam = { x: bx, y: by, w: bw, h: bh };
 
-  // 命中：敵を倒す
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (aabb(beam, e)) {
-      // ドロップ
       drops.push({
-        x: e.x + e.w/2 - 18,
-        y: e.y + e.h/2 - 18,
-        w: 36, h: 36,
+        x: e.x + e.w/2 - 24,
+        y: e.y + e.h/2 - 24,
+        w: 48, h: 48,
       });
 
-      // 回復
       player.mental = Math.min(3, player.mental + 1);
 
-      // 撃破SE
       beep(220, 60, "sawtooth", 0.03);
       beep(160, 80, "sawtooth", 0.02);
 
@@ -298,29 +298,19 @@ function requestScan() {
 // 敵生成
 // =========================
 function spawnEnemy() {
-  // 画面外周寄りに湧く
   const margin = 20;
   const side = Math.floor(Math.random() * 4);
 
   let x, y;
-  if (side === 0) { // top
-    x = rand(margin, BASE_W - margin);
-    y = -40;
-  } else if (side === 1) { // bottom
-    x = rand(margin, BASE_W - margin);
-    y = BASE_H + 40;
-  } else if (side === 2) { // left
-    x = -40;
-    y = rand(margin, BASE_H - margin);
-  } else { // right
-    x = BASE_W + 40;
-    y = rand(margin, BASE_H - margin);
-  }
+  if (side === 0) { x = rand(margin, BASE_W - margin); y = -60; }
+  else if (side === 1) { x = rand(margin, BASE_W - margin); y = BASE_H + 60; }
+  else if (side === 2) { x = -60; y = rand(margin, BASE_H - margin); }
+  else { x = BASE_W + 60; y = rand(margin, BASE_H - margin); }
 
   enemies.push({
     x, y,
-    w: 40, h: 50,
-    speed: rand(70, 110),
+    w: 56, h: 66,
+    speed: rand(45, 70),
   });
 }
 
@@ -333,23 +323,24 @@ function getMoveInput() {
   const left = keys.has("a") || keys.has("arrowleft") || touchState.left;
   const right = keys.has("d") || keys.has("arrowright") || touchState.right;
   const atk = keys.has(" ") || keys.has("enter") || touchState.atk;
-
   return { up, down, left, right, atk };
 }
 
 function update(dt) {
   const input = getMoveInput();
 
-  // スキャン
+  if (GAME.over) {
+    if (input.atk) restartGame();
+    return;
+  }
+
   if (input.atk) requestScan();
 
   if (scanCooldown > 0) scanCooldown -= dt;
   if (scanFx > 0) scanFx -= dt;
-
-  // 無敵
   if (player.invuln > 0) player.invuln -= dt;
 
-  // 移動
+  // ---- 移動（斜めOK：vx/vyを正規化済み） ----
   let vx = 0, vy = 0;
   if (input.left) vx -= 1;
   if (input.right) vx += 1;
@@ -360,7 +351,7 @@ function update(dt) {
     const len = Math.hypot(vx, vy);
     vx /= len; vy /= len;
 
-    // 向き
+    // 向き（ビーム方向）だけは4方向に丸める
     if (Math.abs(vx) > Math.abs(vy)) player.dir = vx < 0 ? "left" : "right";
     else player.dir = vy < 0 ? "up" : "down";
   }
@@ -374,7 +365,7 @@ function update(dt) {
   // 敵湧き
   spawnTimer -= dt;
   if (spawnTimer <= 0) {
-    spawnTimer = rand(1.2, 2.0);
+    spawnTimer = rand(1.4, 2.2);
     spawnEnemy();
   }
 
@@ -393,22 +384,22 @@ function update(dt) {
     e.y += (dy / l) * e.speed * dt;
   }
 
-  // 敵接触ダメージ
+  // 接触ダメージ
   for (const e of enemies) {
     if (player.invuln <= 0 && aabb(player, e)) {
       player.mental -= 1;
-      player.invuln = 0.9;
+      player.invuln = 1.0;
       beep(120, 120, "square", 0.04);
 
       if (player.mental <= 0) {
-        // ゲームオーバー：リセット（簡易）
-        resetGame();
-        return;
+        GAME.over = true;
+        beep(90, 180, "sawtooth", 0.04);
+        break;
       }
     }
   }
 
-  // ドロップ回収
+  // カゴ回収
   for (let i = drops.length - 1; i >= 0; i--) {
     if (aabb(player, drops[i])) {
       score += 1;
@@ -418,29 +409,34 @@ function update(dt) {
   }
 }
 
-function resetGame() {
+function restartGame() {
+  GAME.over = false;
   score = 0;
-  player.x = 40; player.y = 80;
+
+  player.x = 40;
+  player.y = 80;
   player.mental = 3;
   player.invuln = 0;
   player.dir = "down";
+
   enemies.length = 0;
   drops.length = 0;
+
   spawnTimer = 0.3;
   scanCooldown = 0;
   scanFx = 0;
+
+  beep(880, 60, "square", 0.03);
 }
 
 // =========================
 // 描画
 // =========================
 function drawUI() {
-  // スコア
-  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
   ctx.font = "16px system-ui";
   ctx.fillText(`Score: ${score}`, 10, 22);
 
-  // メンタル（ハート）
   const x0 = 10, y0 = 36;
   for (let i = 0; i < 3; i++) {
     const filled = i < player.mental;
@@ -461,7 +457,7 @@ function drawPad() {
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
     ctx.font = "18px system-ui";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -474,8 +470,6 @@ function drawPad() {
   btn(r.right, touchState.right, "▶");
   btn(r.up, touchState.up, "▲");
   btn(r.down, touchState.down, "▼");
-
-  // SCANボタン
   btn(r.atk, false, "SCAN");
 }
 
@@ -483,8 +477,8 @@ function drawScanFx() {
   if (scanFx <= 0) return;
 
   const alpha = clamp(scanFx / 0.12, 0, 1);
-  const range = 120;
-  const thick = 48;
+  const range = 130;
+  const thick = 56;
 
   let bx, by, bw, bh;
   if (player.dir === "up") {
@@ -506,7 +500,7 @@ function drawScanFx() {
   }
 
   ctx.save();
-  ctx.globalAlpha = 0.35 * alpha;
+  ctx.globalAlpha = 0.32 * alpha;
   ctx.fillStyle = "rgba(80,255,200,1)";
   ctx.fillRect(bx, by, bw, bh);
 
@@ -517,17 +511,33 @@ function drawScanFx() {
   ctx.restore();
 }
 
+function drawGameOver() {
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.65)";
+  ctx.fillRect(0, 0, BASE_W, BASE_H);
+
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.textAlign = "center";
+  ctx.font = "28px system-ui";
+  ctx.fillText("GAME OVER", BASE_W/2, BASE_H/2 - 40);
+
+  ctx.font = "16px system-ui";
+  ctx.fillText(`Score: ${score}`, BASE_W/2, BASE_H/2 - 10);
+
+  ctx.font = "14px system-ui";
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillText("SCAN を押してリスタート", BASE_W/2, BASE_H/2 + 22);
+
+  ctx.textAlign = "left";
+  ctx.restore();
+}
+
 function draw() {
-  // 背景はCSSなので、ここではクリアだけ
   ctx.clearRect(0, 0, BASE_W, BASE_H);
 
-  // ドロップ
   for (const d of drops) drawSprite(IMG.basket, d.x, d.y, d.w, d.h);
-
-  // 敵
   for (const e of enemies) drawSprite(IMG.ojisan, e.x, e.y, e.w, e.h);
 
-  // プレイヤー（無敵点滅）
   if (player.invuln > 0) {
     if (Math.floor(player.invuln * 12) % 2 === 0) {
       drawSprite(IMG.player, player.x, player.y, player.w, player.h);
@@ -536,12 +546,11 @@ function draw() {
     drawSprite(IMG.player, player.x, player.y, player.w, player.h);
   }
 
-  // スキャンエフェクト
   drawScanFx();
-
-  // UI
   drawUI();
   drawPad();
+
+  if (GAME.over) drawGameOver();
 }
 
 // =========================
