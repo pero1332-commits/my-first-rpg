@@ -1,20 +1,13 @@
 // =========================
-// JKスーパーサバイバー（完全版 v1.0）
-// - 有限マップ 6000x6000 + カメラ追従（Vampire Survivors構図）
-// - 背景：map_super.png タイル敷き（未ロード時フォールバック表示）
-// - 操作：左下アナログスティック（360°/斜めOK） + 右下SCAN
-// - SCAN：アナログ方向へ 360°ビーム（見た目/当たり判定）
-// - スコア：敵撃破で +1
-// - 敵：画面外スポーンで追尾、接触でメンタル減
-// - 撃破：メンタル回復 + アイテム抽選
-// - 敵スケーリング：50キルで速度UP（上限あり）、10キルで同時湧きUP（上限あり）
-// - アイテム抽選：
-//    60% カゴ(回復+1)
-//    10% 守護猫(周回/重ねがけOK)
-//    5%  虹猫(追尾/重ねがけOK)
-//    5%  レジ袋(60秒吸引)
-//    1%  メンケア注射(最大メンタル+1&全回復 / 最大6)
-//    19% なし
+// JKスーパーサバイバー（完全版 v1.2）
+// 反映：
+// - プレイヤー当たり判定を小さく（キャラに合わせて）
+// - アイテム取得トースト（名前＋効果）
+// - GAME OVER → SCANで即リスタート
+// - 猫の寿命∞＆重ねがけOK（ビルド感）
+// - 画面外残像対策（clear + fill + タイル余裕描画）
+// - 敵撃破でHP回復（ON）
+// - カゴ取得でもHP回復（ON）
 // =========================
 
 const canvas = document.querySelector("#game");
@@ -27,11 +20,10 @@ let dpr = 1;
 let scale = 1;
 let lastTime = 0;
 
-// ---- ワールド（有限マップ） ----
 const WORLD = { w: 6000, h: 6000 };
 
 // =========================
-// 画像（差し替え前提）
+// 画像
 // =========================
 const IMG = {
   player: new Image(),
@@ -55,14 +47,14 @@ IMG.item_bag.src = "/assets/item_bag.png";
 IMG.item_injection.src = "/assets/item_injection.png";
 
 // =========================
-// フィット（スマホ全画面）
+// Canvas fit
 // =========================
 function fitCanvas() {
   dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
   const vw = window.innerWidth;
   const vh = window.innerHeight;
 
-  scale = Math.max(1, Math.floor(Math.min(vw / BASE_W, vh / BASE_H)));
+  scale = Math.max(1, Math.min(vw / BASE_W, vh / BASE_H));
 
   canvas.style.width = `${vw}px`;
   canvas.style.height = `${vh}px`;
@@ -97,8 +89,6 @@ function norm(x, y) {
   if (L < 1e-6) return { x: 0, y: 0, L: 0 };
   return { x: x / L, y: y / L, L };
 }
-
-// 点と線分の距離^2（ビーム判定）
 function distPointToSegmentSq(px, py, ax, ay, bx, by) {
   const abx = bx - ax, aby = by - ay;
   const apx = px - ax, apy = py - ay;
@@ -134,9 +124,9 @@ function beep(freq = 880, ms = 60, type = "square", gain = 0.03) {
 }
 
 // =========================
-// 入力（アナログスティック + SCAN）
+// 入力（アナログ + SCAN）
 // =========================
-function viewToScreenToBase(clientX, clientY) {
+function viewToBase(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
   const x = (clientX - rect.left);
   const y = (clientY - rect.top);
@@ -162,7 +152,7 @@ const ui = {
   joyCenter: { x: 90, y: BASE_H - 120 },
   joyRadius: 62,
   knobRadius: 24,
-  joyVec: { x: 0, y: 0 }, // -1..1
+  joyVec: { x: 0, y: 0 },
   deadZone: 0.10,
 
   scanRect: { x: BASE_W - 160, y: BASE_H - 120, w: 140, h: 70 },
@@ -194,46 +184,14 @@ function setJoyFromPoint(p) {
   }
 }
 
-canvas.addEventListener("pointerdown", (e) => {
-  const p = viewToScreenToBase(e.clientX, e.clientY);
-
-  if (ptInRect(p, ui.scanRect)) {
-    canvas.setPointerCapture(e.pointerId);
-    requestScan();
-    return;
-  }
-
-  if (ptInRect(p, ui.joyZone) && !ui.joyActive) {
-    canvas.setPointerCapture(e.pointerId);
-    ui.joyActive = true;
-    ui.joyPointerId = e.pointerId;
-
-    // タップ地点にスティック出現（確実に掴める）
-    ui.joyCenter.x = clamp(p.x, 40, BASE_W * 0.62);
-    ui.joyCenter.y = clamp(p.y, BASE_H * 0.55, BASE_H - 40);
-
-    setJoyFromPoint(p);
-  }
-});
-canvas.addEventListener("pointermove", (e) => {
-  if (!ui.joyActive) return;
-  if (e.pointerId !== ui.joyPointerId) return;
-  setJoyFromPoint(viewToScreenToBase(e.clientX, e.clientY));
-});
-canvas.addEventListener("pointerup", (e) => {
-  if (ui.joyActive && e.pointerId === ui.joyPointerId) resetJoy();
-});
-canvas.addEventListener("pointercancel", (e) => {
-  if (ui.joyActive && e.pointerId === ui.joyPointerId) resetJoy();
-});
-
-// PC補助
-const keys = new Set();
-window.addEventListener("keydown", (e) => {
-  keys.add(e.key.toLowerCase());
-  if (e.key === " " || e.key === "Enter") requestScan();
-});
-window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+// =========================
+// Toast（アイテムポップアップ）
+// =========================
+const toast = { text: "", t: 0 };
+function showToast(text, seconds = 2.0) {
+  toast.text = text;
+  toast.t = seconds;
+}
 
 // =========================
 // ゲーム状態
@@ -243,18 +201,29 @@ const GAME = { over: false };
 const player = {
   x: WORLD.w / 2,
   y: WORLD.h / 2,
-  w: 54,
-  h: 70,
+  w: 72,
+  h: 92,
   speed: 185,
 
   mental: 3,
   maxMental: 3,
   invuln: 0,
 
-  // 360°照準（常に更新：スティック倒してる間）
   aimX: 0,
   aimY: 1,
 };
+
+// ★さらに小さく：見た目に合わせて「胴体だけ」当たり判定に寄せる
+// ここをいじるだけで当たり判定の体感を調整できる
+const PLAYER_HIT_INSET = { l: 24, r: 24, t: 28, b: 22 };
+function getPlayerHitbox() {
+  return {
+    x: player.x + PLAYER_HIT_INSET.l,
+    y: player.y + PLAYER_HIT_INSET.t,
+    w: player.w - PLAYER_HIT_INSET.l - PLAYER_HIT_INSET.r,
+    h: player.h - PLAYER_HIT_INSET.t - PLAYER_HIT_INSET.b,
+  };
+}
 
 const camera = { x: 0, y: 0 };
 
@@ -263,10 +232,9 @@ let killCount = 0;
 
 const enemies = [];
 const items = [];
-const cats = [];
+const cats = []; // 寿命∞
 let vacuumTimer = 0;
 
-// 難易度（上限つき）
 const DIFF = {
   speedBase: 50,
   speedCap: 90,
@@ -279,10 +247,8 @@ const DIFF = {
   spawnCooldownMin: 0.25,
   spawnCooldownMax: 0.90,
 };
-
 let spawnCooldown = 0;
 
-// ビーム
 let scanCooldown = 0;
 let scanFx = 0;
 const SCAN = { length: 150, radius: 28 };
@@ -299,7 +265,7 @@ function updateCamera() {
 }
 
 // =========================
-// 敵スケーリング
+// 難易度
 // =========================
 function currentEnemySpeed() {
   const bonus = Math.floor(killCount / 50) * DIFF.speedStepPer50Kills;
@@ -308,6 +274,43 @@ function currentEnemySpeed() {
 function currentMaxEnemies() {
   const add = Math.floor(killCount / 10) * DIFF.maxEnemiesStepPer10Kills;
   return clamp(DIFF.maxEnemiesBase + add, DIFF.maxEnemiesBase, DIFF.maxEnemiesCap);
+}
+
+// =========================
+// リスタート（GAME OVER中 SCAN）
+// =========================
+function resetGame() {
+  GAME.over = false;
+
+  player.x = WORLD.w / 2;
+  player.y = WORLD.h / 2;
+
+  player.maxMental = 3;
+  player.mental = 3;
+  player.invuln = 0;
+
+  player.aimX = 0;
+  player.aimY = 1;
+
+  score = 0;
+  killCount = 0;
+
+  enemies.length = 0;
+  items.length = 0;
+  cats.length = 0;
+
+  vacuumTimer = 0;
+  scanCooldown = 0;
+  scanFx = 0;
+  spawnCooldown = 0;
+
+  toast.text = "";
+  toast.t = 0;
+
+  updateCamera();
+  beep(660, 80, "triangle", 0.03);
+  beep(880, 60, "square", 0.03);
+  showToast("リスタート！", 1.2);
 }
 
 // =========================
@@ -334,22 +337,22 @@ function spawnEnemyOffscreen() {
 
   enemies.push({
     x, y,
-    w: 56, h: 66,
+    w: 72, h: 84,
     speed: currentEnemySpeed(),
   });
 }
 
 // =========================
-// ドロップ抽選
+// ドロップ
 // =========================
 function rollDrop() {
   const r = Math.random() * 100;
-  if (r < 60) return "basket";        // 60%
-  if (r < 70) return "cat_orbit";     // 10%
-  if (r < 75) return "cat_rainbow";   // 5%
-  if (r < 80) return "bag";           // 5%
-  if (r < 81) return "injection";     // 1%
-  return null;                        // 19%
+  if (r < 60) return "basket";
+  if (r < 70) return "cat_orbit";
+  if (r < 75) return "cat_rainbow";
+  if (r < 80) return "bag";
+  if (r < 81) return "injection";
+  return null;
 }
 function spawnDropAt(x, y) {
   const type = rollDrop();
@@ -365,36 +368,35 @@ function spawnDropAt(x, y) {
 }
 
 // =========================
-// 猫（重ねがけOK）
+// 猫（∞）
 // =========================
 function addCat(type) {
-  // 永続だと増えすぎるので長寿命（調整可）
-  const duration = 35; // 秒
-  cats.push({
-    type,
-    t: 0,
-    life: duration,
-    x: player.x,
-    y: player.y,
-  });
+  cats.push({ type, t: 0, x: player.x, y: player.y });
+  if (type === "cat_rainbow") showToast("🌈 虹猫：敵を追って浄化！", 2.2);
+  if (type === "cat_orbit") showToast("🐱 守護猫：周回バリア！", 2.2);
 }
 
 // =========================
-// アイテム適用
+// アイテム適用（カゴでも回復）
 // =========================
 function applyItem(type) {
   if (type === "basket") {
+    const before = player.mental;
     player.mental = Math.min(player.maxMental, player.mental + 1);
     beep(660, 60, "triangle", 0.03);
+    showToast(`🧺 カゴ：メンタル +1（${before}→${player.mental}）`, 2.0);
 
   } else if (type === "injection") {
+    const beforeMax = player.maxMental;
     player.maxMental = Math.min(6, player.maxMental + 1);
     player.mental = player.maxMental;
     beep(980, 90, "square", 0.04);
+    showToast(`💉 メンケア注射：最大+1（${beforeMax}→${player.maxMental}）＆全回復`, 2.4);
 
   } else if (type === "bag") {
     vacuumTimer = 60;
     beep(520, 80, "sawtooth", 0.03);
+    showToast("🛍 レジ袋：60秒アイテム吸引！", 2.2);
 
   } else if (type === "cat_rainbow") {
     addCat("cat_rainbow");
@@ -407,23 +409,23 @@ function applyItem(type) {
 }
 
 // =========================
-// 敵撃破処理
+// 敵撃破（回復ON）
 // =========================
 function onEnemyKilled(x, y) {
   killCount += 1;
   score += 1;
 
-  // 仕様：倒すと回復
+  // ★バランス良いのでON：撃破で回復
   player.mental = Math.min(player.maxMental, player.mental + 1);
 
   spawnDropAt(x, y);
 
-  beep(220, 60, "sawtooth", 0.03);
-  beep(160, 80, "sawtooth", 0.02);
+  beep(220, 55, "sawtooth", 0.025);
+  beep(160, 70, "sawtooth", 0.018);
 }
 
 // =========================
-// SCAN（360°ビーム）
+// SCAN
 // =========================
 function requestScan() {
   if (GAME.over) return;
@@ -445,7 +447,6 @@ function requestScan() {
 
   lastBeam.ax = ax; lastBeam.ay = ay; lastBeam.bx = bx; lastBeam.by = by;
 
-  // 敵ヒット（カプセル近似：中心点距離でOK）
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     const cx = e.x + e.w / 2;
@@ -459,13 +460,60 @@ function requestScan() {
 }
 
 // =========================
+// 操作：SCAN（ゲームオーバー時は即リスタート）
+// =========================
+function onScanPressed() {
+  if (GAME.over) { resetGame(); return; }
+  requestScan();
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  const p = viewToBase(e.clientX, e.clientY);
+
+  if (ptInRect(p, ui.scanRect)) {
+    canvas.setPointerCapture(e.pointerId);
+    onScanPressed();
+    return;
+  }
+
+  if (ptInRect(p, ui.joyZone) && !ui.joyActive) {
+    canvas.setPointerCapture(e.pointerId);
+    ui.joyActive = true;
+    ui.joyPointerId = e.pointerId;
+
+    ui.joyCenter.x = clamp(p.x, 40, BASE_W * 0.62);
+    ui.joyCenter.y = clamp(p.y, BASE_H * 0.55, BASE_H - 40);
+
+    setJoyFromPoint(p);
+  }
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!ui.joyActive) return;
+  if (e.pointerId !== ui.joyPointerId) return;
+  setJoyFromPoint(viewToBase(e.clientX, e.clientY));
+});
+canvas.addEventListener("pointerup", (e) => {
+  if (ui.joyActive && e.pointerId === ui.joyPointerId) resetJoy();
+});
+canvas.addEventListener("pointercancel", (e) => {
+  if (ui.joyActive && e.pointerId === ui.joyPointerId) resetJoy();
+});
+
+// PC
+const keys = new Set();
+window.addEventListener("keydown", (e) => {
+  keys.add(e.key.toLowerCase());
+  if (e.key === " " || e.key === "Enter") onScanPressed();
+});
+window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+
+// =========================
 // 移動ベクトル
 // =========================
 function getMoveVector() {
   let vx = ui.joyVec.x;
   let vy = ui.joyVec.y;
 
-  // PC補助（任意）
   let kx = 0, ky = 0;
   if (keys.has("a") || keys.has("arrowleft")) kx -= 1;
   if (keys.has("d") || keys.has("arrowright")) kx += 1;
@@ -480,28 +528,20 @@ function getMoveVector() {
 
   const L = Math.hypot(vx, vy);
   if (L > 1) { vx /= L; vy /= L; }
-
-  return { vx, vy, mag: Math.hypot(vx, vy) };
+  return { vx, vy };
 }
 
 // =========================
 // 猫更新
 // =========================
 function updateCats(dt) {
-  // 寿命
-  for (let i = cats.length - 1; i >= 0; i--) {
-    cats[i].t += dt;
-    cats[i].life -= dt;
-    if (cats[i].life <= 0) cats.splice(i, 1);
-  }
-
-  // 行動
   for (const c of cats) {
+    c.t += dt;
+
     if (c.type === "cat_orbit") {
       const radius = 70;
       const speed = 3.2;
       const ang = c.t * speed;
-
       c.x = player.x + player.w / 2 + Math.cos(ang) * radius;
       c.y = player.y + player.h / 2 + Math.sin(ang) * radius;
 
@@ -533,7 +573,7 @@ function updateCats(dt) {
       c.y = clamp(c.y, 0, WORLD.h);
     }
 
-    // 敵浄化（接触）
+    // 敵浄化
     const killR = 26;
     for (let i = enemies.length - 1; i >= 0; i--) {
       const e = enemies[i];
@@ -550,10 +590,9 @@ function updateCats(dt) {
 }
 
 // =========================
-// アイテム更新（吸引/拾う）
+// アイテム更新
 // =========================
 function updateItems(dt) {
-  // 吸引
   if (vacuumTimer > 0) {
     vacuumTimer -= dt;
 
@@ -580,8 +619,7 @@ function updateItems(dt) {
     }
   }
 
-  // 取得
-  const pbox = { x: player.x, y: player.y, w: player.w, h: player.h };
+  const pbox = getPlayerHitbox();
   for (let i = items.length - 1; i >= 0; i--) {
     if (aabb(pbox, items[i])) {
       applyItem(items[i].type);
@@ -594,13 +632,15 @@ function updateItems(dt) {
 // Update
 // =========================
 function update(dt) {
+  if (toast.t > 0) toast.t -= dt;
+
   if (GAME.over) return;
 
   if (scanCooldown > 0) scanCooldown -= dt;
   if (scanFx > 0) scanFx -= dt;
   if (player.invuln > 0) player.invuln -= dt;
 
-  // aim：スティック倒してる間は常に更新（360°）
+  // aim：スティック方向
   if (ui.joyVec.x !== 0 || ui.joyVec.y !== 0) {
     const n = norm(ui.joyVec.x, ui.joyVec.y);
     if (n.L > 0) { player.aimX = n.x; player.aimY = n.y; }
@@ -611,7 +651,6 @@ function update(dt) {
   player.x += mv.vx * player.speed * dt;
   player.y += mv.vy * player.speed * dt;
 
-  // ワールド境界
   player.x = clamp(player.x, 0, WORLD.w - player.w);
   player.y = clamp(player.y, 0, WORLD.h - player.h);
 
@@ -621,7 +660,6 @@ function update(dt) {
   const maxE = currentMaxEnemies();
   spawnCooldown -= dt;
 
-  // 敵が増えるほど少し短く（ただし下限/上限）
   const targetCd = clamp(
     0.9 - (maxE - DIFF.maxEnemiesBase) * 0.05,
     DIFF.spawnCooldownMin,
@@ -650,8 +688,8 @@ function update(dt) {
     e.y = clamp(e.y, 0, WORLD.h - e.h);
   }
 
-  // 接触ダメ
-  const pbox = { x: player.x, y: player.y, w: player.w, h: player.h };
+  // 接触ダメ（小ヒットボックス）
+  const pbox = getPlayerHitbox();
   for (const e of enemies) {
     if (player.invuln <= 0 && aabb(pbox, e)) {
       player.mental -= 1;
@@ -660,6 +698,7 @@ function update(dt) {
 
       if (player.mental <= 0) {
         GAME.over = true;
+        showToast("GAME OVER… SCANでリスタート", 3.0);
         break;
       }
     }
@@ -670,14 +709,13 @@ function update(dt) {
 }
 
 // =========================
-// Draw：背景マップ（フォールバック付き）
+// Draw：背景（残像対策）
 // =========================
 function drawMap() {
-  // 真っ黒回避のベース
+  ctx.clearRect(0, 0, BASE_W, BASE_H);
   ctx.fillStyle = "#0b1020";
   ctx.fillRect(0, 0, BASE_W, BASE_H);
 
-  // 未ロードならフォールバック格子
   if (!IMG.map || !IMG.map.complete || IMG.map.naturalWidth === 0) {
     const s = 32;
     for (let y = 0; y < BASE_H; y += s) {
@@ -705,8 +743,8 @@ function drawMap() {
   const startX = Math.floor(viewL / tileW) * tileW;
   const startY = Math.floor(viewT / tileH) * tileH;
 
-  for (let wy = startY; wy < viewB; wy += tileH) {
-    for (let wx = startX; wx < viewR; wx += tileW) {
+  for (let wy = startY - tileH; wy < viewB + tileH; wy += tileH) {
+    for (let wx = startX - tileW; wx < viewR + tileW; wx += tileW) {
       const sx = wx - camera.x;
       const sy = wy - camera.y;
       ctx.drawImage(IMG.map, sx, sy, tileW, tileH);
@@ -720,9 +758,10 @@ function drawMap() {
 function drawUI() {
   ctx.fillStyle = "rgba(255,255,255,0.92)";
   ctx.font = "16px system-ui";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
   ctx.fillText(`Score: ${score}`, 10, 22);
 
-  // ライフ
   const x0 = 10, y0 = 36;
   for (let i = 0; i < player.maxMental; i++) {
     const filled = i < player.mental;
@@ -734,6 +773,33 @@ function drawUI() {
     ctx.fillStyle = "rgba(255,255,255,0.85)";
     ctx.font = "12px system-ui";
     ctx.fillText(`BAG: ${Math.ceil(vacuumTimer)}s`, 10, 68);
+  }
+
+  if (toast.t > 0 && toast.text) {
+    const alpha = clamp(toast.t / 2.0, 0.25, 1);
+    ctx.save();
+    ctx.globalAlpha = 0.9 * alpha;
+    ctx.font = "13px system-ui";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    const padX = 12;
+    const metrics = ctx.measureText(toast.text);
+    const w = clamp(metrics.width + padX * 2, 180, BASE_W - 24);
+    const h = 30;
+
+    const x = BASE_W / 2 - w / 2;
+    const y = 98;
+
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, 10);
+    else ctx.rect(x, y, w, h);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.fillText(toast.text, BASE_W / 2, y + h / 2);
+    ctx.restore();
   }
 }
 
@@ -759,7 +825,6 @@ function drawJoystick() {
   ctx.beginPath();
   ctx.arc(ui.joyCenter.x, ui.joyCenter.y, ui.joyRadius, 0, Math.PI * 2);
   ctx.stroke();
-
   ctx.restore();
 }
 
@@ -788,8 +853,7 @@ function drawScanButton() {
   ctx.font = "18px system-ui";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("SCAN", r.x + r.w / 2, r.y + r.h / 2);
-
+  ctx.fillText(GAME.over ? "RETRY" : "SCAN", r.x + r.w / 2, r.y + r.h / 2);
   ctx.restore();
 }
 
@@ -797,7 +861,6 @@ function drawScanFx() {
   if (scanFx <= 0) return;
   const alpha = clamp(scanFx / 0.12, 0, 1);
 
-  // world → screen
   const ax = lastBeam.ax - camera.x;
   const ay = lastBeam.ay - camera.y;
   const bx = lastBeam.bx - camera.x;
@@ -838,19 +901,17 @@ function drawGameOver() {
 
   ctx.font = "14px system-ui";
   ctx.fillStyle = "rgba(255,255,255,0.85)";
-  ctx.fillText("リロードで再挑戦（次で即リスタートも実装可）", BASE_W / 2, BASE_H / 2 + 22);
-
+  ctx.fillText("SCANで即リスタート", BASE_W / 2, BASE_H / 2 + 22);
   ctx.restore();
 }
 
 // =========================
-// Draw：世界→画面
+// Draw
 // =========================
 function drawWorld() {
-  // 背景
   drawMap();
 
-  // アイテム
+  // items
   for (const it of items) {
     const sx = it.x - camera.x;
     const sy = it.y - camera.y;
@@ -864,12 +925,12 @@ function drawWorld() {
     drawSprite(img, sx, sy, it.w, it.h);
   }
 
-  // 敵
+  // enemies
   for (const e of enemies) {
     drawSprite(IMG.ojisan, e.x - camera.x, e.y - camera.y, e.w, e.h);
   }
 
-  // 猫（小さめ）
+  // cats
   for (const c of cats) {
     const sx = c.x - camera.x;
     const sy = c.y - camera.y;
@@ -878,13 +939,13 @@ function drawWorld() {
     drawSprite(img, sx - w / 2, sy - h / 2, w, h);
   }
 
-  // プレイヤー
+  // player
   drawSprite(IMG.player, player.x - camera.x, player.y - camera.y, player.w, player.h);
 
-  // ビーム
+  // beam
   drawScanFx();
 
-  // UI
+  // ui
   drawUI();
   drawJoystick();
   drawScanButton();
