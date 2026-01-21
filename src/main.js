@@ -1,9 +1,49 @@
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
 
-// ===== 画面設定 =====
-const W = 480;
-const H = 270;
+// ====== 画面設定（スマホ対応）======
+const BASE_W = 480;
+const BASE_H = 270;
+
+// 見た目の表示サイズ（CSSピクセル）
+let viewW = BASE_W;
+let viewH = BASE_H;
+
+// 実描画サイズ（devicePixelRatio込み）
+let W = BASE_W;
+let H = BASE_H;
+
+function resize() {
+  const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+
+  // 画面に収まる最大サイズ（上下にUIがある前提で少し引く）
+  const maxW = Math.min(window.innerWidth, 960);
+  const maxH = Math.min(window.innerHeight - 160, 720);
+
+  // 比率維持でスケール
+  const scale = Math.max(1, Math.floor(Math.min(maxW / BASE_W, maxH / BASE_H)));
+
+  viewW = BASE_W * scale;
+  viewH = BASE_H * scale;
+
+  // CanvasのCSSサイズ（見た目）
+  canvas.style.width = viewW + "px";
+  canvas.style.height = viewH + "px";
+
+  // Canvasの実ピクセル（描画の解像度）
+  W = viewW * dpr;
+  H = viewH * dpr;
+  canvas.width = W;
+  canvas.height = H;
+
+  // 座標系を「viewW/viewH基準」にする（縦伸びしない）
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+}
+
+window.addEventListener("resize", resize);
+resize();
+
 
 function resize() {
   const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
