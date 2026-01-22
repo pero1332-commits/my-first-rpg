@@ -14,6 +14,7 @@
 
 // ★反映確認タグ（ビルドタグ）
 // これが画面右上に出ていれば「今デプロイされているJS」がこのファイル
+console.log("JK SUPER SURVIVOR v1.3 BUILD TAG = 2026-01-22-01");
 const BUILD_TAG = "v1.3-money-build-" + Date.now();
 console.log("[BUILD_TAG]", BUILD_TAG);
 
