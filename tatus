@@ -1,0 +1,203 @@
+warning: in the working copy of 'src/main.js', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/src/main.js b/src/main.js[m
+[1mindex 30ed414..42561ab 100644[m
+[1m--- a/src/main.js[m
+[1m+++ b/src/main.js[m
+[36m@@ -1,15 +1,22 @@[m
+ // =========================[m
+[31m-// JKスーパーサバイバー（完全版 v1.2）[m
+[31m-// 反映：[m
+[31m-// - プレイヤー当たり判定を小さく（キャラに合わせて）[m
+[31m-// - アイテム取得トースト（名前＋効果）[m
+[31m-// - GAME OVER → SCANで即リスタート[m
+[31m-// - 猫の寿命∞＆重ねがけOK（ビルド感）[m
+[31m-// - 画面外残像対策（clear + fill + タイル余裕描画）[m
+[31m-// - 敵撃破でHP回復（ON）[m
+[31m-// - カゴ取得でもHP回復（ON）[m
+[32m+[m[32m// JKスーパーサバイバー（完全版 v1.3）[m
+[32m+[m[32m// 追加：[m
+[32m+[m[32m// - 50体ごとに敵速度/湧き上限を少しずつ解除（暴走しない上限）[m
+[32m+[m[32m// - 敵が「お金」を落とす（50体ごとに上位金額が出やすい）[m
+[32m+[m[32m// - お金でUPGRADE → 食材武器へ自動交換（ランダム成長）[m
+[32m+[m[32m//   * 大根ロケット（ホーミング）[m
+[32m+[m[32m//   * にんじんピストル（最寄りへ連射）[m
+[32m+[m[32m//   * じゃがいも爆弾（周囲AoE）[m
+[32m+[m[32m// 既存：[m
+[32m+[m[32m// - 当たり判定小さめ / トースト / GAME OVER→SCANで即リスタ / 猫∞ / 残像対策[m
+[32m+[m[32m// - 敵撃破でHP回復（ON） / カゴ取得でもHP回復（ON）[m
+ // =========================[m
+ [m
+[32m+[m[32m// ★反映確認タグ（ビルドタグ）[m
+[32m+[m[32m// これが画面右上に出ていれば「今デプロイされているJS」がこのファイル[m
+[32m+[m[32mconst BUILD_TAG = "v1.3-money-build-" + Date.now();[m
+[32m+[m[32mconsole.log("[BUILD_TAG]", BUILD_TAG);[m
+[32m+[m
+ const canvas = document.querySelector("#game");[m
+ const ctx = canvas.getContext("2d");[m
+ [m
+[36m@@ -29,11 +36,16 @@[m [mconst IMG = {[m
+   player: new Image(),[m
+   ojisan: new Image(),[m
+   map: new Image(),[m
+[32m+[m
+   item_basket: new Image(),[m
+   item_cat_rainbow: new Image(),[m
+   item_cat_orbit: new Image(),[m
+   item_bag: new Image(),[m
+   item_injection: new Image(),[m
+[32m+[m
+[32m+[m[32m  money_100: new Image(),[m
+[32m+[m[32m  money_1000: new Image(),[m
+[32m+[m[32m  money_10000: new Image(),[m
+ };[m
+ [m
+ IMG.player.src = "/assets/player.png";[m
+[36m@@ -46,8 +58,13 @@[m [mIMG.item_cat_orbit.src = "/assets/item_cat_orbit.png";[m
+ IMG.item_bag.src = "/assets/item_bag.png";[m
+ IMG.item_injection.src = "/assets/item_injection.png";[m
+ [m
+[32m+[m[32m// お金画像（なくても動く：無ければ四角で描画する）[m
+[32m+[m[32mIMG.money_100.src = "/assets/money_100.png";[m
+[32m+[m[32mIMG.money_1000.src = "/assets/money_1000.png";[m
+[32m+[m[32mIMG.money_10000.src = "/assets/money_10000.png";[m
+[32m+[m
+ // =========================[m
+[31m-// Canvas fit[m
+[32m+[m[32m// Canvas fit（スマホ全画面）[m
+ // =========================[m
+ function fitCanvas() {[m
+   dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));[m
+[36m@@ -81,8 +98,9 @@[m [mfunction aabb(a, b) {[m
+   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;[m
+ }[m
+ function drawSprite(img, x, y, w, h) {[m
+[31m-  if (!img || !img.complete || img.naturalWidth === 0) return;[m
+[32m+[m[32m  if (!img || !img.complete || img.naturalWidth === 0) return false;[m
+   ctx.drawImage(img, x, y, w, h);[m
+[32m+[m[32m  return true;[m
+ }[m
+ function norm(x, y) {[m
+   const L = Math.hypot(x, y);[m
+[36m@@ -124,7 +142,7 @@[m [mfunction beep(freq = 880, ms = 60, type = "square", gain = 0.03) {[m
+ }[m
+ [m
+ // =========================[m
+[31m-// 入力（アナログ + SCAN）[m
+[32m+[m[32m// 入力（アナログ + SCAN + UPGRADE）[m
+ // =========================[m
+ function viewToBase(clientX, clientY) {[m
+   const rect = canvas.getBoundingClientRect();[m
+[36m@@ -155,7 +173,11 @@[m [mconst ui = {[m
+   joyVec: { x: 0, y: 0 },[m
+   deadZone: 0.10,[m
+ [m
+[32m+[m[32m  // 右下：SCAN[m
+   scanRect: { x: BASE_W - 160, y: BASE_H - 120, w: 140, h: 70 },[m
+[32m+[m
+[32m+[m[32m  // 右下：UPGRADE（SCANの上）[m
+[32m+[m[32m  upRect: { x: BASE_W - 160, y: BASE_H - 200, w: 140, h: 60 },[m
+ };[m
+ [m
+ function resetJoy() {[m
+[36m@@ -185,7 +207,7 @@[m [mfunction setJoyFromPoint(p) {[m
+ }[m
+ [m
+ // =========================[m
+[31m-// Toast（アイテムポップアップ）[m
+[32m+[m[32m// Toast[m
+ // =========================[m
+ const toast = { text: "", t: 0 };[m
+ function showToast(text, seconds = 2.0) {[m
+[36m@@ -201,7 +223,7 @@[m [mconst GAME = { over: false };[m
+ const player = {[m
+   x: WORLD.w / 2,[m
+   y: WORLD.h / 2,[m
+[31m-  w: 72,[m
+[32m+[m[32m  w: 92,[m
+   h: 92,[m
+   speed: 185,[m
+ [m
+[36m@@ -213,8 +235,7 @@[m [mconst player = {[m
+   aimY: 1,[m
+ };[m
+ [m
+[31m-// ★さらに小さく：見た目に合わせて「胴体だけ」当たり判定に寄せる[m
+[31m-// ここをいじるだけで当たり判定の体感を調整できる[m
+[32m+[m[32m// ★当たり判定（ここをいじる）[m
+ const PLAYER_HIT_INSET = { l: 24, r: 24, t: 28, b: 22 };[m
+ function getPlayerHitbox() {[m
+   return {[m
+[36m@@ -227,24 +248,49 @@[m [mfunction getPlayerHitbox() {[m
+ [m
+ const camera = { x: 0, y: 0 };[m
+ [m
+[31m-let score = 0;[m
+[31m-let killCount = 0;[m
+[32m+[m[32mlet score = 0;      // 撃破スコア[m
+[32m+[m[32mlet killCount = 0;  // 総撃破数[m
+[32m+[m[32mlet money = 0;      // 所持金（円）[m
+ [m
+ const enemies = [];[m
+ const items = [];[m
+ const cats = []; // 寿命∞[m
+[32m+[m
+ let vacuumTimer = 0;[m
+ [m
+[32m+[m[32m// ビルド（武器）[m
+[32m+[m[32mconst build = {[m
+[32m+[m[32m  level: 0,[m
+[32m+[m[32m  nextCost: 500,[m
+[32m+[m[32m  daikon: 0, // 大根ロケット[m
+[32m+[m[32m  carrot: 0, // にんじんピストル[m
+[32m+[m[32m  potato: 0, // じゃがいも爆弾[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32mfunction calcNextCost(lv) {[m
+[32m+[m[32m  return Math.floor(500 * Math.pow(1.25, lv)); // 500→625→781→...[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m// 自動攻撃用[m
+[32m+[m[32mconst projectiles = [];[m
+[32m+[m[32mconst aoeBursts = [];[m
+[32m+[m[32mconst weaponTimer = {[m
+[32m+[m[32m  carrot: 0,[m
+[32m+[m[32m  daikon: 0,[m
+[32m+[m[32m  potato: 0,[m
+[32m+[m[32m};[m
+[32m+[m
+ const DIFF = {[m
+[32m+[m[32m  // 50体ごとに上限をじわっと解除する方針[m
+   speedBase: 50,[m
+[31m-  speedCap: 90,[m
+[31m-  speedStepPer50Kills: 5,[m
+[32m+[m[32m  speedCapBase: 90,[m
+[32m+[m[32m  speedCapMax: 115,[m
+ [m
+   maxEnemiesBase: 5,[m
+[31m-  maxEnemiesCap: 15,[m
+[31m-  maxEnemiesStepPer10Kills: 1,[m
+[32m+[m[32m  maxEnemiesCapBase: 15,[m
+[32m+[m[32m  maxEnemiesCapMax: 24,[m
+ [m
+[31m-  spawnCooldownMin: 0.25,[m
+[32m+[m[32m  spawnCooldownMin: 0.22,[m
+   spawnCooldownMax: 0.90,[m
+ };[m
+ let spawnCooldown = 0;[m
+[36m@@ -265,19 +311,23 @@[m [mfunction updateCamera() {[m
+ }[m
+ [m
+ // =========================[m
+[31m-// 難易度[m
+[32m+[m[32m// 難易度（50体ごとに解除）[m
+ // =========================[m
+ function currentEnemySpeed() {[m
+[31m-  const bonus = Math.floor(killCount / 50) * DIFF.speedStepPer50Kills;[m
+[31m-  return clamp(DIFF.speedBase + bonus, DIFF.speedBase, DIFF.speedCap);[m
+[32m+[m[32m  const phase = Math.floor(killCount / 50); // 0,1,2...[m
+[32m+[m[32m  const base = DIFF.speedBase + phase * 4; // 少しずつ上がる[m
+[32m+[m[32m  const cap = Math.min(DIFF.speedCapBase + phase * 3, DIFF.speedCapMax);[m
+[32m+[m[32m  return clamp(base, DIFF.speedBase, cap);[m
+ }[m
+ function currentMaxEnemies() {[m
+[31m-  const add = Math.floor(killCount / 10) * DIFF.maxEnemiesStepPer
