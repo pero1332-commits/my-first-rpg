@@ -1,14 +1,21 @@
 // =========================
-// JKスーパーサバイバー（完全版 v1.2）
-// 反映：
-// - プレイヤー当たり判定を小さく（キャラに合わせて）
-// - アイテム取得トースト（名前＋効果）
-// - GAME OVER → SCANで即リスタート
-// - 猫の寿命∞＆重ねがけOK（ビルド感）
-// - 画面外残像対策（clear + fill + タイル余裕描画）
-// - 敵撃破でHP回復（ON）
-// - カゴ取得でもHP回復（ON）
+// JKスーパーサバイバー（完全版 v1.3）
+// 追加：
+// - 50体ごとに敵速度/湧き上限を少しずつ解除（暴走しない上限）
+// - 敵が「お金」を落とす（50体ごとに上位金額が出やすい）
+// - お金でUPGRADE → 食材武器へ自動交換（ランダム成長）
+//   * 大根ロケット（ホーミング）
+//   * にんじんピストル（最寄りへ連射）
+//   * じゃがいも爆弾（周囲AoE）
+// 既存：
+// - 当たり判定小さめ / トースト / GAME OVER→SCANで即リスタ / 猫∞ / 残像対策
+// - 敵撃破でHP回復（ON） / カゴ取得でもHP回復（ON）
 // =========================
+
+// ★反映確認タグ（ビルドタグ）
+// これが画面右上に出ていれば「今デプロイされているJS」がこのファイル
+const BUILD_TAG = "v1.3-money-build-" + Date.now();
+console.log("[BUILD_TAG]", BUILD_TAG);
 
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
@@ -29,11 +36,16 @@ const IMG = {
   player: new Image(),
   ojisan: new Image(),
   map: new Image(),
+
   item_basket: new Image(),
   item_cat_rainbow: new Image(),
   item_cat_orbit: new Image(),
   item_bag: new Image(),
   item_injection: new Image(),
+
+  money_100: new Image(),
+  money_1000: new Image(),
+  money_10000: new Image(),
 };
 
 IMG.player.src = "/assets/player.png";
@@ -46,8 +58,13 @@ IMG.item_cat_orbit.src = "/assets/item_cat_orbit.png";
 IMG.item_bag.src = "/assets/item_bag.png";
 IMG.item_injection.src = "/assets/item_injection.png";
 
+// お金画像（なくても動く：無ければ四角で描画する）
+IMG.money_100.src = "/assets/money_100.png";
+IMG.money_1000.src = "/assets/money_1000.png";
+IMG.money_10000.src = "/assets/money_10000.png";
+
 // =========================
-// Canvas fit
+// Canvas fit（スマホ全画面）
 // =========================
 function fitCanvas() {
   dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
@@ -81,8 +98,9 @@ function aabb(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 function drawSprite(img, x, y, w, h) {
-  if (!img || !img.complete || img.naturalWidth === 0) return;
+  if (!img || !img.complete || img.naturalWidth === 0) return false;
   ctx.drawImage(img, x, y, w, h);
+  return true;
 }
 function norm(x, y) {
   const L = Math.hypot(x, y);
@@ -124,7 +142,7 @@ function beep(freq = 880, ms = 60, type = "square", gain = 0.03) {
 }
 
 // =========================
-// 入力（アナログ + SCAN）
+// 入力（アナログ + SCAN + UPGRADE）
 // =========================
 function viewToBase(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
@@ -155,7 +173,11 @@ const ui = {
   joyVec: { x: 0, y: 0 },
   deadZone: 0.10,
 
+  // 右下：SCAN
   scanRect: { x: BASE_W - 160, y: BASE_H - 120, w: 140, h: 70 },
+
+  // 右下：UPGRADE（SCANの上）
+  upRect: { x: BASE_W - 160, y: BASE_H - 200, w: 140, h: 60 },
 };
 
 function resetJoy() {
@@ -185,7 +207,7 @@ function setJoyFromPoint(p) {
 }
 
 // =========================
-// Toast（アイテムポップアップ）
+// Toast
 // =========================
 const toast = { text: "", t: 0 };
 function showToast(text, seconds = 2.0) {
@@ -201,7 +223,7 @@ const GAME = { over: false };
 const player = {
   x: WORLD.w / 2,
   y: WORLD.h / 2,
-  w: 72,
+  w: 92,
   h: 92,
   speed: 185,
 
@@ -213,8 +235,7 @@ const player = {
   aimY: 1,
 };
 
-// ★さらに小さく：見た目に合わせて「胴体だけ」当たり判定に寄せる
-// ここをいじるだけで当たり判定の体感を調整できる
+// ★当たり判定（ここをいじる）
 const PLAYER_HIT_INSET = { l: 24, r: 24, t: 28, b: 22 };
 function getPlayerHitbox() {
   return {
@@ -227,24 +248,49 @@ function getPlayerHitbox() {
 
 const camera = { x: 0, y: 0 };
 
-let score = 0;
-let killCount = 0;
+let score = 0;      // 撃破スコア
+let killCount = 0;  // 総撃破数
+let money = 0;      // 所持金（円）
 
 const enemies = [];
 const items = [];
 const cats = []; // 寿命∞
+
 let vacuumTimer = 0;
 
+// ビルド（武器）
+const build = {
+  level: 0,
+  nextCost: 500,
+  daikon: 0, // 大根ロケット
+  carrot: 0, // にんじんピストル
+  potato: 0, // じゃがいも爆弾
+};
+
+function calcNextCost(lv) {
+  return Math.floor(500 * Math.pow(1.25, lv)); // 500→625→781→...
+}
+
+// 自動攻撃用
+const projectiles = [];
+const aoeBursts = [];
+const weaponTimer = {
+  carrot: 0,
+  daikon: 0,
+  potato: 0,
+};
+
 const DIFF = {
+  // 50体ごとに上限をじわっと解除する方針
   speedBase: 50,
-  speedCap: 90,
-  speedStepPer50Kills: 5,
+  speedCapBase: 90,
+  speedCapMax: 115,
 
   maxEnemiesBase: 5,
-  maxEnemiesCap: 15,
-  maxEnemiesStepPer10Kills: 1,
+  maxEnemiesCapBase: 15,
+  maxEnemiesCapMax: 24,
 
-  spawnCooldownMin: 0.25,
+  spawnCooldownMin: 0.22,
   spawnCooldownMax: 0.90,
 };
 let spawnCooldown = 0;
@@ -265,19 +311,23 @@ function updateCamera() {
 }
 
 // =========================
-// 難易度
+// 難易度（50体ごとに解除）
 // =========================
 function currentEnemySpeed() {
-  const bonus = Math.floor(killCount / 50) * DIFF.speedStepPer50Kills;
-  return clamp(DIFF.speedBase + bonus, DIFF.speedBase, DIFF.speedCap);
+  const phase = Math.floor(killCount / 50); // 0,1,2...
+  const base = DIFF.speedBase + phase * 4; // 少しずつ上がる
+  const cap = Math.min(DIFF.speedCapBase + phase * 3, DIFF.speedCapMax);
+  return clamp(base, DIFF.speedBase, cap);
 }
 function currentMaxEnemies() {
-  const add = Math.floor(killCount / 10) * DIFF.maxEnemiesStepPer10Kills;
-  return clamp(DIFF.maxEnemiesBase + add, DIFF.maxEnemiesBase, DIFF.maxEnemiesCap);
+  const phase = Math.floor(killCount / 50);
+  const base = DIFF.maxEnemiesBase + phase * 2;
+  const cap = Math.min(DIFF.maxEnemiesCapBase + phase * 2, DIFF.maxEnemiesCapMax);
+  return clamp(base, DIFF.maxEnemiesBase, cap);
 }
 
 // =========================
-// リスタート（GAME OVER中 SCAN）
+// リスタート
 // =========================
 function resetGame() {
   GAME.over = false;
@@ -294,15 +344,29 @@ function resetGame() {
 
   score = 0;
   killCount = 0;
+  money = 0;
 
   enemies.length = 0;
   items.length = 0;
   cats.length = 0;
 
+  projectiles.length = 0;
+  aoeBursts.length = 0;
+
   vacuumTimer = 0;
   scanCooldown = 0;
   scanFx = 0;
   spawnCooldown = 0;
+
+  build.level = 0;
+  build.nextCost = 500;
+  build.daikon = 0;
+  build.carrot = 0;
+  build.potato = 0;
+
+  weaponTimer.carrot = 0;
+  weaponTimer.daikon = 0;
+  weaponTimer.potato = 0;
 
   toast.text = "";
   toast.t = 0;
@@ -343,7 +407,7 @@ function spawnEnemyOffscreen() {
 }
 
 // =========================
-// ドロップ
+// ドロップ（既存アイテム）
 // =========================
 function rollDrop() {
   const r = Math.random() * 100;
@@ -368,6 +432,54 @@ function spawnDropAt(x, y) {
 }
 
 // =========================
+// お金ドロップ（50体ごとに上位が出やすい）
+// =========================
+function moneyDropTable() {
+  const phase = Math.floor(killCount / 50);
+
+  // 0〜50: 100円80% / 1000円15% / 10000円5%
+  let p100 = 0.80;
+  let p1k = 0.15;
+
+  // 50体ごとに上位へ寄せる（暴走しない）
+  p100 = Math.max(0.55, p100 - phase * 0.05);
+  p1k = Math.min(0.30, p1k + phase * 0.03);
+  let p10k = 1 - p100 - p1k;
+  p10k = clamp(p10k, 0.05, 0.25);
+
+  // 再正規化
+  const s = p100 + p1k + p10k;
+  p100 /= s; p1k /= s; p10k /= s;
+
+  return [
+    { value: 100, p: p100 },
+    { value: 1000, p: p1k },
+    { value: 10000, p: p10k },
+  ];
+}
+function rollMoneyValue() {
+  const t = moneyDropTable();
+  const r = Math.random();
+  let acc = 0;
+  for (const row of t) {
+    acc += row.p;
+    if (r <= acc) return row.value;
+  }
+  return t[t.length - 1].value;
+}
+function spawnMoneyAt(x, y) {
+  const value = rollMoneyValue();
+  items.push({
+    type: "money",
+    value,
+    x: clamp(x, 0, WORLD.w),
+    y: clamp(y, 0, WORLD.h),
+    w: 38,
+    h: 38,
+  });
+}
+
+// =========================
 // 猫（∞）
 // =========================
 function addCat(type) {
@@ -377,7 +489,7 @@ function addCat(type) {
 }
 
 // =========================
-// アイテム適用（カゴでも回復）
+// アイテム適用
 // =========================
 function applyItem(type) {
   if (type === "basket") {
@@ -391,7 +503,7 @@ function applyItem(type) {
     player.maxMental = Math.min(6, player.maxMental + 1);
     player.mental = player.maxMental;
     beep(980, 90, "square", 0.04);
-    showToast(`💉 メンケア注射：最大+1（${beforeMax}→${player.maxMental}）＆全回復`, 2.4);
+    showToast(`💉 注射：最大+1（${beforeMax}→${player.maxMental}）＆全回復`, 2.4);
 
   } else if (type === "bag") {
     vacuumTimer = 60;
@@ -415,13 +527,51 @@ function onEnemyKilled(x, y) {
   killCount += 1;
   score += 1;
 
-  // ★バランス良いのでON：撃破で回復
+  // 撃破で回復（ON）
   player.mental = Math.min(player.maxMental, player.mental + 1);
 
+  // お金を落とす（常に）
+  spawnMoneyAt(x, y);
+
+  // 既存アイテムも抽選で落とす
   spawnDropAt(x, y);
 
   beep(220, 55, "sawtooth", 0.025);
   beep(160, 70, "sawtooth", 0.018);
+}
+
+// =========================
+// UPGRADE：お金でレベルアップ→食材武器ランダム強化
+// =========================
+function buyUpgrade() {
+  if (GAME.over) return;
+
+  if (money < build.nextCost) {
+    beep(220, 80, "sawtooth", 0.02);
+    showToast(`お金が足りない！ ${build.nextCost}円`, 1.2);
+    return;
+  }
+
+  money -= build.nextCost;
+  build.level += 1;
+  build.nextCost = calcNextCost(build.level);
+
+  // ランダム強化（均等）
+  const r = Math.random();
+  let pick = "daikon";
+  if (r < 0.34) pick = "daikon";
+  else if (r < 0.67) pick = "carrot";
+  else pick = "potato";
+
+  build[pick] += 1;
+
+  const label =
+    pick === "daikon" ? "🥬 大根ロケット" :
+    pick === "carrot" ? "🥕 にんじんピストル" :
+                        "🥔 じゃがいも爆弾";
+
+  beep(880, 70, "triangle", 0.03);
+  showToast(`UPGRADE！ ${label} Lv.${build[pick]}`, 1.8);
 }
 
 // =========================
@@ -451,7 +601,6 @@ function requestScan() {
     const e = enemies[i];
     const cx = e.x + e.w / 2;
     const cy = e.y + e.h / 2;
-
     if (distPointToSegmentSq(cx, cy, ax, ay, bx, by) <= SCAN.radius * SCAN.radius) {
       enemies.splice(i, 1);
       onEnemyKilled(cx, cy);
@@ -460,7 +609,7 @@ function requestScan() {
 }
 
 // =========================
-// 操作：SCAN（ゲームオーバー時は即リスタート）
+// 操作：SCAN / UPGRADE（GAME OVER時はSCANで即リスタ）
 // =========================
 function onScanPressed() {
   if (GAME.over) { resetGame(); return; }
@@ -470,12 +619,21 @@ function onScanPressed() {
 canvas.addEventListener("pointerdown", (e) => {
   const p = viewToBase(e.clientX, e.clientY);
 
+  // 右下：SCAN
   if (ptInRect(p, ui.scanRect)) {
     canvas.setPointerCapture(e.pointerId);
     onScanPressed();
     return;
   }
 
+  // 右下：UPGRADE
+  if (ptInRect(p, ui.upRect)) {
+    canvas.setPointerCapture(e.pointerId);
+    buyUpgrade();
+    return;
+  }
+
+  // 左下：ジョイスティック
   if (ptInRect(p, ui.joyZone) && !ui.joyActive) {
     canvas.setPointerCapture(e.pointerId);
     ui.joyActive = true;
@@ -504,11 +662,12 @@ const keys = new Set();
 window.addEventListener("keydown", (e) => {
   keys.add(e.key.toLowerCase());
   if (e.key === " " || e.key === "Enter") onScanPressed();
+  if (e.key.toLowerCase() === "u") buyUpgrade();
 });
 window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
 
 // =========================
-// 移動ベクトル
+// 移動ベクトル（斜めOK）
 // =========================
 function getMoveVector() {
   let vx = ui.joyVec.x;
@@ -573,7 +732,7 @@ function updateCats(dt) {
       c.y = clamp(c.y, 0, WORLD.h);
     }
 
-    // 敵浄化
+    // 敵浄化（猫触れたら即死）
     const killR = 26;
     for (let i = enemies.length - 1; i >= 0; i--) {
       const e = enemies[i];
@@ -590,7 +749,164 @@ function updateCats(dt) {
 }
 
 // =========================
-// アイテム更新
+// 武器：ターゲット取得
+// =========================
+function findNearestEnemy(x, y) {
+  let best = null;
+  let bestD2 = Infinity;
+  for (const e of enemies) {
+    const ex = e.x + e.w / 2;
+    const ey = e.y + e.h / 2;
+    const dx = ex - x;
+    const dy = ey - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestD2) { bestD2 = d2; best = e; }
+  }
+  return best;
+}
+
+// =========================
+// 武器：自動攻撃更新
+// =========================
+function updateWeapons(dt) {
+  const px = player.x + player.w / 2;
+  const py = player.y + player.h / 2;
+
+  // にんじんピストル：最寄りへ連射
+  if (build.carrot > 0) {
+    weaponTimer.carrot -= dt;
+    const rate = clamp(0.55 - build.carrot * 0.05, 0.18, 0.55); // Lv上がるほど速い
+    if (weaponTimer.carrot <= 0) {
+      weaponTimer.carrot = rate;
+      const t = findNearestEnemy(px, py);
+      if (t) {
+        const tx = t.x + t.w / 2;
+        const ty = t.y + t.h / 2;
+        const n = norm(tx - px, ty - py);
+        projectiles.push({
+          kind: "carrot",
+          x: px, y: py,
+          vx: n.x * 520,
+          vy: n.y * 520,
+          r: 6,
+          life: 1.2,
+        });
+        beep(980, 22, "square", 0.01);
+      }
+    }
+  }
+
+  // 大根ロケット：ホーミング（ゆっくり強い）
+  if (build.daikon > 0) {
+    weaponTimer.daikon -= dt;
+    const rate = clamp(1.2 - build.daikon * 0.08, 0.45, 1.2);
+    if (weaponTimer.daikon <= 0) {
+      weaponTimer.daikon = rate;
+      const t = findNearestEnemy(px, py);
+      if (t) {
+        projectiles.push({
+          kind: "daikon",
+          x: px, y: py,
+          vx: 0, vy: 0,
+          speed: clamp(240 + build.daikon * 12, 240, 340),
+          r: 10,
+          life: 2.4,
+          turn: 7.0, // 追尾強さ
+        });
+        beep(520, 35, "triangle", 0.012);
+      }
+    }
+  }
+
+  // じゃがいも爆弾：周囲AoE
+  if (build.potato > 0) {
+    weaponTimer.potato -= dt;
+    const rate = clamp(2.2 - build.potato * 0.12, 0.85, 2.2);
+    if (weaponTimer.potato <= 0) {
+      weaponTimer.potato = rate;
+      aoeBursts.push({
+        x: px, y: py,
+        r: clamp(70 + build.potato * 10, 70, 140),
+        t: 0.18,
+      });
+      beep(140, 60, "sawtooth", 0.015);
+    }
+  }
+}
+
+// =========================
+// 弾更新
+// =========================
+function updateProjectiles(dt) {
+  // AoE
+  for (let i = aoeBursts.length - 1; i >= 0; i--) {
+    const a = aoeBursts[i];
+    a.t -= dt;
+
+    // 当たり判定（敵中心がAoE内）
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      const ex = e.x + e.w / 2;
+      const ey = e.y + e.h / 2;
+      const dx = ex - a.x;
+      const dy = ey - a.y;
+      if (dx * dx + dy * dy <= a.r * a.r) {
+        enemies.splice(j, 1);
+        onEnemyKilled(ex, ey);
+      }
+    }
+
+    if (a.t <= 0) aoeBursts.splice(i, 1);
+  }
+
+  // projectile
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    p.life -= dt;
+
+    if (p.kind === "daikon") {
+      // 追尾
+      const t = findNearestEnemy(p.x, p.y);
+      if (t) {
+        const tx = t.x + t.w / 2;
+        const ty = t.y + t.h / 2;
+        const n = norm(tx - p.x, ty - p.y);
+        // 速度をターゲット方向へ寄せる
+        const desiredVx = n.x * p.speed;
+        const desiredVy = n.y * p.speed;
+        const lerp = clamp(p.turn * dt, 0, 1);
+        p.vx = p.vx + (desiredVx - p.vx) * lerp;
+        p.vy = p.vy + (desiredVy - p.vy) * lerp;
+      }
+    }
+
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+
+    // 画面外で消す
+    if (p.x < -200 || p.y < -200 || p.x > WORLD.w + 200 || p.y > WORLD.h + 200) p.life = -1;
+
+    // ヒット判定（弾中心が敵のAABBに入ったら）
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      const ex = e.x + e.w / 2;
+      const ey = e.y + e.h / 2;
+      const dx = ex - p.x;
+      const dy = ey - p.y;
+      if (dx * dx + dy * dy <= (p.r + 18) * (p.r + 18)) {
+        enemies.splice(j, 1);
+        onEnemyKilled(ex, ey);
+        p.life = -1;
+        break;
+      }
+    }
+
+    if (p.life <= 0) projectiles.splice(i, 1);
+  }
+}
+
+// =========================
+// アイテム更新（お金も拾う）
 // =========================
 function updateItems(dt) {
   if (vacuumTimer > 0) {
@@ -621,10 +937,19 @@ function updateItems(dt) {
 
   const pbox = getPlayerHitbox();
   for (let i = items.length - 1; i >= 0; i--) {
-    if (aabb(pbox, items[i])) {
-      applyItem(items[i].type);
+    const it = items[i];
+    if (!aabb(pbox, it)) continue;
+
+    if (it.type === "money") {
+      money += it.value;
+      beep(780, 35, "square", 0.012);
+      showToast(`💴 +${it.value}円`, 1.1);
       items.splice(i, 1);
+      continue;
     }
+
+    applyItem(it.type);
+    items.splice(i, 1);
   }
 }
 
@@ -633,7 +958,6 @@ function updateItems(dt) {
 // =========================
 function update(dt) {
   if (toast.t > 0) toast.t -= dt;
-
   if (GAME.over) return;
 
   if (scanCooldown > 0) scanCooldown -= dt;
@@ -705,6 +1029,8 @@ function update(dt) {
   }
 
   updateCats(dt);
+  updateWeapons(dt);
+  updateProjectiles(dt);
   updateItems(dt);
 }
 
@@ -762,7 +1088,19 @@ function drawUI() {
   ctx.textBaseline = "alphabetic";
   ctx.fillText(`Score: ${score}`, 10, 22);
 
-  const x0 = 10, y0 = 36;
+  // money
+  ctx.font = "14px system-ui";
+  ctx.fillStyle = "rgba(255,255,255,0.88)";
+  ctx.fillText(`Money: ${money}円`, 10, 44);
+
+  // build
+  ctx.font = "12px system-ui";
+  ctx.fillStyle = "rgba(255,255,255,0.78)";
+  ctx.fillText(`Lv:${build.level}  次:${build.nextCost}円`, 10, 62);
+  ctx.fillText(`大根:${build.daikon} にんじん:${build.carrot} じゃが:${build.potato}`, 10, 78);
+
+  // HP
+  const x0 = 10, y0 = 92;
   for (let i = 0; i < player.maxMental; i++) {
     const filled = i < player.mental;
     ctx.fillStyle = filled ? "rgba(255,80,120,0.95)" : "rgba(255,80,120,0.25)";
@@ -772,7 +1110,7 @@ function drawUI() {
   if (vacuumTimer > 0) {
     ctx.fillStyle = "rgba(255,255,255,0.85)";
     ctx.font = "12px system-ui";
-    ctx.fillText(`BAG: ${Math.ceil(vacuumTimer)}s`, 10, 68);
+    ctx.fillText(`BAG: ${Math.ceil(vacuumTimer)}s`, 10, 126);
   }
 
   if (toast.t > 0 && toast.text) {
@@ -801,6 +1139,15 @@ function drawUI() {
     ctx.fillText(toast.text, BASE_W / 2, y + h / 2);
     ctx.restore();
   }
+
+  // ★ビルドタグ表示（右上）
+  ctx.save();
+  ctx.textAlign = "right";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = "11px system-ui";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.fillText(BUILD_TAG, BASE_W - 6, 14);
+  ctx.restore();
 }
 
 function drawJoystick() {
@@ -828,11 +1175,9 @@ function drawJoystick() {
   ctx.restore();
 }
 
-function drawScanButton() {
-  const r = ui.scanRect;
-
+function drawButton(r, label, alphaFill = 0.12) {
   ctx.save();
-  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fillStyle = `rgba(255,255,255,${alphaFill})`;
   ctx.strokeStyle = "rgba(255,255,255,0.22)";
   ctx.lineWidth = 2;
 
@@ -850,10 +1195,10 @@ function drawScanButton() {
   ctx.stroke();
 
   ctx.fillStyle = "rgba(255,255,255,0.88)";
-  ctx.font = "18px system-ui";
+  ctx.font = "16px system-ui";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(GAME.over ? "RETRY" : "SCAN", r.x + r.w / 2, r.y + r.h / 2);
+  ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2);
   ctx.restore();
 }
 
@@ -916,6 +1261,28 @@ function drawWorld() {
     const sx = it.x - camera.x;
     const sy = it.y - camera.y;
 
+    if (it.type === "money") {
+      let img = null;
+      if (it.value === 100) img = IMG.money_100;
+      else if (it.value === 1000) img = IMG.money_1000;
+      else img = IMG.money_10000;
+
+      const ok = drawSprite(img, sx, sy, it.w, it.h);
+      if (!ok) {
+        // 画像なければ代替描画
+        ctx.save();
+        ctx.fillStyle = it.value === 100 ? "rgba(255,240,120,0.9)"
+                    : it.value === 1000 ? "rgba(170,255,170,0.9)"
+                                        : "rgba(255,170,255,0.9)";
+        ctx.fillRect(sx, sy, it.w, it.h);
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.font = "10px system-ui";
+        ctx.fillText(String(it.value), sx + 4, sy + 14);
+        ctx.restore();
+      }
+      continue;
+    }
+
     let img = IMG.item_basket;
     if (it.type === "cat_rainbow") img = IMG.item_cat_rainbow;
     else if (it.type === "cat_orbit") img = IMG.item_cat_orbit;
@@ -939,6 +1306,31 @@ function drawWorld() {
     drawSprite(img, sx - w / 2, sy - h / 2, w, h);
   }
 
+  // projectiles
+  ctx.save();
+  for (const p of projectiles) {
+    const sx = p.x - camera.x;
+    const sy = p.y - camera.y;
+    ctx.fillStyle = p.kind === "carrot" ? "rgba(255,180,80,0.9)"
+                : p.kind === "daikon" ? "rgba(220,255,220,0.9)"
+                                     : "rgba(255,255,255,0.9)";
+    ctx.beginPath();
+    ctx.arc(sx, sy, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // AoE
+  for (const a of aoeBursts) {
+    const sx = a.x - camera.x;
+    const sy = a.y - camera.y;
+    ctx.globalAlpha = clamp(a.t / 0.18, 0, 1) * 0.35;
+    ctx.fillStyle = "rgba(255,220,120,1)";
+    ctx.beginPath();
+    ctx.arc(sx, sy, a.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+
   // player
   drawSprite(IMG.player, player.x - camera.x, player.y - camera.y, player.w, player.h);
 
@@ -948,7 +1340,9 @@ function drawWorld() {
   // ui
   drawUI();
   drawJoystick();
-  drawScanButton();
+
+  drawButton(ui.upRect, `UPGRADE`);
+  drawButton(ui.scanRect, GAME.over ? "RETRY" : "SCAN", 0.12);
 
   if (GAME.over) drawGameOver();
 }
